@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-mono: 'Courier New', Courier, monospace;
+}
+
+@layer base {
+  body {
+    @apply antialiased text-[#E0E0E0];
+    font-family: var(--font-sans);
+    background-color: #0A0A0B;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply bg-[#1A1A1C] border border-[#2A2A2C] text-[#888] px-4 py-2 rounded-[2px] text-[11px] uppercase tracking-[1px] cursor-pointer transition-all duration-200 hover:text-white hover:border-[#444];
+  }
+
+  .btn-active {
+    @apply bg-[#F27D26] text-black border-[#F27D26] shadow-[0_0_15px_rgba(242,125,38,0.4)] hover:bg-[#ff8a33];
+  }
+
+  .display-panel {
+    @apply bg-black border border-[#2A2A2C] rounded shadow-[inset_0_0_15px_rgba(242,125,38,0.15)] p-4 flex justify-between items-center text-[#F27D26] font-mono;
+  }
+
+  .knob-outer {
+    @apply w-14 h-14 rounded-full bg-[#1A1A1C] border-2 border-[#2A2A2C] relative flex items-center justify-center shadow-[0_4px_10px_rgba(0,0,0,0.5)];
+  }
+
+  .knob-indicator {
+    @apply absolute w-[2px] h-3 bg-[#F27D26] top-1 origin-[50%_24px];
+  }
+
+  .step-cell {
+    @apply bg-[#141416] border border-[#222] rounded p-2 flex flex-col justify-between transition-all duration-200;
+  }
+
+  .step-led {
+    @apply w-full h-1 bg-[#222] rounded-[1px] transition-all duration-200;
+  }
+
+  .step-led-active {
+    @apply bg-[#F27D26] shadow-[0_0_8px_#F27D26];
+  }
+
+  .note-key {
+    @apply h-5 w-full bg-[#1A1A1C] border border-[#222] mt-1 text-[8px] flex items-center justify-center text-[#888];
+  }
+
+  .fx-panel {
+    @apply bg-white/[0.02] border border-white/[0.05] rounded-lg p-5 flex gap-8;
+  }
+}
+
+/* Custom Range Slider Styling */
+input[type="range"] {
+  -webkit-appearance: none;
+  background: transparent;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  @apply w-full h-[1px] bg-[#333] rounded-full;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  @apply h-6 w-6 bg-[#F27D26] rounded-full cursor-pointer shadow-[0_0_12px_rgba(242,125,38,0.6)];
+  margin-top: -12px;
+}

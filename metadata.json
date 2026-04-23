@@ -1,0 +1,6 @@
+{
+  "name": "Acid-303 Pro",
+  "description": "A modern TB-303 emulation with style-aware randomizer, hardware-grade diode filter modeling, and MIDI/WAV export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
