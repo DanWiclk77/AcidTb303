@@ -16,10 +16,15 @@ import {
   ChevronUp, 
   ChevronDown,
   ChevronRight,
-  ChevronLeft
+  ChevronLeft,
+  Activity
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as MidiWriter from 'midi-writer-js';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
+import audioBufferToWav from 'audiobuffer-to-wav';
+import { Capacitor } from '@capacitor/core';
 
 // --- Constants & Types ---
 
@@ -45,10 +50,10 @@ const STYLES = [
 ];
 
 // --- Factory Data Generator ---
-const createFactoryBanks = (): Bank[] => {
+// We keep this outside the component so it's stable across re-renders
+const FACTORY_BANKS: Bank[] = ((): Bank[] => {
   const factoryBanks: Bank[] = [];
   
-  // Style/Artist Factory Banks
   STYLES.forEach((styleName, sIdx) => {
     const patterns: Pattern[] = [];
     for (let i = 0; i < 128; i++) {
@@ -78,7 +83,7 @@ const createFactoryBanks = (): Bank[] => {
   });
 
   return factoryBanks;
-};
+})();
 
 const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -263,7 +268,7 @@ export default function App() {
 
     // Load initial data
     const savedBanks = localStorage.getItem('acid303_banks_v2');
-    const factory = createFactoryBanks();
+    const factory = FACTORY_BANKS;
     
     if (savedBanks) {
       const parsed = JSON.parse(savedBanks);
@@ -458,47 +463,144 @@ export default function App() {
     })));
   };
 
-  const downloadMidi = () => {
+  const downloadMidi = async () => {
     if (!activePattern) return;
-    const track = new MidiWriter.Track();
-    track.addEvent(new MidiWriter.ProgramChangeEvent({ instrument: 39 })); // Synth Bass 2
+    
+    // Track 0: Meta events (Tempo, etc)
+    const metaTrack = new MidiWriter.Track();
+    metaTrack.addEvent(new MidiWriter.TempoEvent({ bpm: bpm }));
+    metaTrack.addEvent(new MidiWriter.TimeSignatureEvent(4, 4));
+
+    // Track 1: Notes
+    const noteTrack = new MidiWriter.Track();
+    noteTrack.addEvent(new MidiWriter.ProgramChangeEvent({ instrument: 39 })); // Synth Bass 2
 
     activePattern.steps.forEach((step, i) => {
       if (step.active) {
-        const note = NOTES[step.note] + (step.octave + 2);
-        track.addEvent(new MidiWriter.NoteEvent({
-            pitch: [note],
-            duration: step.slide ? '8' : '16',
-            velocity: step.accent ? 120 : 80,
-            startTick: i * 128
+        // Calculate the transposed note name to match Tone.js playback
+        const baseNote = NOTES[step.note] + step.octave;
+        const transposedPitch = Tone.Frequency(baseNote).transpose(tuning).toNote();
+        
+        // Duration: if slide is active, note lasts longer to create legato feel
+        const duration = step.slide ? '8' : '16';
+        
+        // Velocity: accents get higher velocity
+        const velocity = step.accent ? 127 : 90;
+
+        noteTrack.addEvent(new MidiWriter.NoteEvent({
+            pitch: [transposedPitch],
+            duration: duration,
+            velocity: velocity,
+            startTick: i * 32 // 32 ticks per 16th note when PPQ is 128 (MidiWriter default)
         }));
       }
     });
 
-    const write = new MidiWriter.Writer(track);
-    const link = document.createElement('a');
-    link.href = write.dataUri();
-    link.download = `${activePattern.name || 'acid_303'}.mid`;
-    link.click();
+    // Formats: Passing array of tracks usually results in Format 1
+    const write = new MidiWriter.Writer([metaTrack, noteTrack]);
+    const fileName = `${activePattern.name || 'acid_303'}.mid`;
+    const dataUri = write.dataUri();
+    const base64Data = dataUri.split(',')[1];
+
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const savedFile = await Filesystem.writeFile({
+          path: fileName,
+          data: base64Data,
+          directory: Directory.Cache,
+        });
+
+        await Share.share({
+          title: 'Export MIDI',
+          url: savedFile.uri,
+          dialogTitle: 'Share MIDI file',
+        });
+      } catch (e) {
+        console.error('Error sharing MIDI', e);
+        alert('Could not share MIDI file');
+      }
+    } else {
+      const link = document.createElement('a');
+      link.href = write.dataUri();
+      link.download = fileName;
+      link.click();
+    }
   };
 
   const downloadWav = async () => {
-    if (isPlaying) startSequencer(); 
-    const recorder = new Tone.Recorder();
-    Tone.getDestination().connect(recorder);
+    if (!activePattern) return;
     
-    recorder.start();
-    await startSequencer();
+    const duration = 16 * (60 / bpm / 4) + 0.5; // 16 steps + tail
     
-    setTimeout(async () => {
-      const recording = await recorder.stop();
-      const url = URL.createObjectURL(recording);
+    // Render!
+    const buffer = await Tone.Offline(() => {
+       const d = new Tone.Distortion(drive / 100).toDestination();
+       const f = new Tone.Filter({
+         frequency: cutoff,
+         type: "lowpass",
+         rolloff: -24,
+         Q: resonance * 30
+       }).connect(d);
+
+       const s = new Tone.MonoSynth({
+         oscillator: { type: waveform },
+         envelope: { attack: 0.005, decay: decay, sustain: 0, release: 0.1 },
+         filterEnvelope: { 
+           attack: 0.005, decay: decay, sustain: 0, release: 0.1, 
+           baseFrequency: 30, octaves: envMod * 7 + 1, exponent: 2 
+         }
+       }).connect(f);
+       
+       activePattern.steps.forEach((step, i) => {
+         if (step.active) {
+           const startTime = i * (60 / bpm / 4);
+           const pitch = Tone.Frequency(NOTES[step.note] + step.octave).transpose(tuning).toNote();
+           
+           if (step.accent) {
+             f.frequency.setValueAtTime(cutoff * (1 + accentAmt), startTime);
+           } else {
+             f.frequency.setValueAtTime(cutoff, startTime);
+           }
+
+           s.portamento = step.slide ? 0.05 : 0.001;
+           s.triggerAttackRelease(pitch, "16n", startTime);
+         }
+       });
+    }, duration);
+
+    // Convert AudioBuffer to WAV
+    const wavData = audioBufferToWav(buffer);
+    const blob = new Blob([new DataView(wavData)], { type: 'audio/wav' });
+    const fileName = `${activePattern.name || 'acid_303'}.wav`;
+
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const reader = new FileReader();
+        reader.readAsDataURL(blob);
+        reader.onloadend = async () => {
+          const base64data = (reader.result as string).split(',')[1];
+          const savedFile = await Filesystem.writeFile({
+            path: fileName,
+            data: base64data,
+            directory: Directory.Cache,
+          });
+
+          await Share.share({
+            title: 'Export WAV',
+            url: savedFile.uri,
+            dialogTitle: 'Share WAV file',
+          });
+        };
+      } catch (e) {
+        alert('Could not share WAV file');
+      }
+    } else {
+      const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `${activePattern?.name || 'acid_303'}.webm`;
+      link.download = fileName;
       link.click();
-      startSequencer();
-    }, 4000 * (60/bpm) * 4);
+    }
   };
 
   const saveToLocal = () => {
@@ -666,6 +768,23 @@ export default function App() {
         {/* FX / Choice Panel */}
         <div className="fx-panel items-center justify-between select-auto">
           <div className="flex gap-8 items-center">
+            <div className="flex flex-col gap-1 w-32">
+              <label className="text-[10px] text-[#555] uppercase tracking-widest">Waveform</label>
+              <div className="flex gap-1 h-10 p-1 bg-[#111] rounded border border-[#333]">
+                <button 
+                  onClick={() => setWaveform('sawtooth')}
+                  className={`flex-1 text-[10px] uppercase font-bold rounded ${waveform === 'sawtooth' ? 'bg-[#F27D26] text-black' : 'text-[#555] hover:text-white'}`}
+                >
+                  Saw
+                </button>
+                <button 
+                  onClick={() => setWaveform('square')}
+                  className={`flex-1 text-[10px] uppercase font-bold rounded ${waveform === 'square' ? 'bg-[#F27D26] text-black' : 'text-[#555] hover:text-white'}`}
+                >
+                  Sq
+                </button>
+              </div>
+            </div>
             <div className="flex flex-col gap-1 w-32">
               <label className="text-[10px] text-[#555] uppercase tracking-widest">Root / Scale</label>
               <div className="flex gap-1">
